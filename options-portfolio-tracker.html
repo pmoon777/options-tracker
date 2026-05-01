@@ -47,7 +47,10 @@
         const API_CONFIG = {
             clientId: '',
             redirectUri: 'https://pmoon777.github.io/options-tracker/options-portfolio-tracker.html',
-            schwabBaseUrl: 'https://api.schwabapi.com/marketdata/v1',
+            // Correct Schwab API endpoints
+            authUrl: 'https://api.schwabapi.com/v1/oauth/authorize',
+            tokenUrl: 'https://api.schwabapi.com/v1/oauth/token',
+            marketDataUrl: 'https://api.schwabapi.com/marketdata/v1',
             accessToken: null,
             refreshToken: null
         };
@@ -61,22 +64,37 @@
 
             // Get authentication URL for OAuth
             getAuthUrl: () => {
+                if (!API_CONFIG.clientId) {
+                    throw new Error('Client ID is required');
+                }
+                
                 const params = new URLSearchParams({
                     response_type: 'code',
                     client_id: API_CONFIG.clientId,
                     redirect_uri: API_CONFIG.redirectUri,
                     scope: 'readonly'
                 });
-                return `https://api.schwabapi.com/v1/oauth/authorize?${params}`;
+                return `${API_CONFIG.authUrl}?${params}`;
             },
 
             // Exchange authorization code for access token
             exchangeCodeForToken: async (code) => {
+                if (!API_CONFIG.clientId) {
+                    throw new Error('Client ID is required');
+                }
+
+                console.log('Exchanging auth code for token...', {
+                    clientId: API_CONFIG.clientId,
+                    redirectUri: API_CONFIG.redirectUri,
+                    code: code.substring(0, 10) + '...'
+                });
+
                 try {
-                    const response = await fetch('https://api.schwabapi.com/v1/oauth/token', {
+                    const response = await fetch(API_CONFIG.tokenUrl, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/x-www-form-urlencoded',
+                            'Accept': 'application/json'
                         },
                         body: new URLSearchParams({
                             grant_type: 'authorization_code',
@@ -86,11 +104,21 @@
                         })
                     });
 
+                    const responseText = await response.text();
+                    console.log('Token exchange response:', response.status, responseText);
+
                     if (!response.ok) {
-                        throw new Error('Failed to exchange code for token');
+                        let errorMessage = `HTTP ${response.status}`;
+                        try {
+                            const errorData = JSON.parse(responseText);
+                            errorMessage = errorData.error_description || errorData.error || errorMessage;
+                        } catch (e) {
+                            errorMessage = responseText || errorMessage;
+                        }
+                        throw new Error(`Authentication failed: ${errorMessage}`);
                     }
 
-                    const data = await response.json();
+                    const data = JSON.parse(responseText);
                     API_CONFIG.accessToken = data.access_token;
                     API_CONFIG.refreshToken = data.refresh_token;
                     
@@ -116,7 +144,7 @@
                 
                 try {
                     const response = await fetch(
-                        `${API_CONFIG.schwabBaseUrl}/pricehistory?symbol=${encodeURIComponent(symbol)}`, 
+                        `${API_CONFIG.marketDataUrl}/pricehistory?symbol=${encodeURIComponent(symbol)}`, 
                         {
                             headers: {
                                 'Authorization': `Bearer ${API_CONFIG.accessToken}`,
@@ -176,10 +204,11 @@
                 }
 
                 try {
-                    const response = await fetch('https://api.schwabapi.com/v1/oauth/token', {
+                    const response = await fetch(API_CONFIG.tokenUrl, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/x-www-form-urlencoded',
+                            'Accept': 'application/json'
                         },
                         body: new URLSearchParams({
                             grant_type: 'refresh_token',
@@ -252,6 +281,7 @@
             const [clientId, setClientId] = React.useState(API_CONFIG.clientId);
             const [isAuthenticating, setIsAuthenticating] = React.useState(false);
             const [authError, setAuthError] = React.useState(null);
+            const [showDebugInfo, setShowDebugInfo] = React.useState(false);
 
             const handleSaveConfig = () => {
                 if (!clientId.trim()) {
@@ -260,6 +290,7 @@
                 }
                 API_CONFIG.clientId = clientId.trim();
                 localStorage.setItem('schwab_client_id', clientId.trim());
+                setAuthError(null);
                 onConfigured();
             };
 
@@ -269,11 +300,20 @@
                     return;
                 }
                 
-                API_CONFIG.clientId = clientId.trim();
-                localStorage.setItem('schwab_client_id', clientId.trim());
+                setIsAuthenticating(true);
+                setAuthError(null);
                 
-                const authUrl = schwabApiService.getAuthUrl();
-                window.location.href = authUrl;
+                try {
+                    API_CONFIG.clientId = clientId.trim();
+                    localStorage.setItem('schwab_client_id', clientId.trim());
+                    
+                    const authUrl = schwabApiService.getAuthUrl();
+                    console.log('Redirecting to auth URL:', authUrl);
+                    window.location.href = authUrl;
+                } catch (error) {
+                    setIsAuthenticating(false);
+                    setAuthError(error.message);
+                }
             };
 
             return React.createElement('div', {
@@ -291,28 +331,44 @@
                     key: 'description',
                     className: 'text-sm text-blue-700 mb-4'
                 }, [
-                    React.createElement('p', { key: 'p1' }, 'To use real option data, configure your Schwab API credentials:'),
+                    React.createElement('p', { key: 'p1' }, '⚠️ If you get "invalid client" error, follow these exact steps:'),
                     React.createElement('ol', {
                         key: 'steps',
-                        className: 'list-decimal ml-5 mt-2 space-y-1'
+                        className: 'list-decimal ml-5 mt-2 space-y-2'
                     }, [
-                        React.createElement('li', { key: 'step1' }, 'Register at Schwab Developer Portal'),
-                        React.createElement('li', { key: 'step2' }, 'Create an app with redirect URI: https://pmoon777.github.io/options-tracker/options-portfolio-tracker.html'),
-                        React.createElement('li', { key: 'step3' }, 'Enter your Client ID below'),
-                        React.createElement('li', { key: 'step4' }, 'Click "Authenticate with Schwab" to authorize')
+                        React.createElement('li', { key: 'step1' }, [
+                            React.createElement('strong', { key: 'bold' }, 'Go to '),
+                            React.createElement('a', {
+                                key: 'link',
+                                href: 'https://developer.schwab.com/',
+                                target: '_blank',
+                                className: 'text-blue-600 underline'
+                            }, 'Schwab Developer Portal'),
+                            React.createElement('span', { key: 'text' }, ' and register/login')
+                        ]),
+                        React.createElement('li', { key: 'step2' }, [
+                            React.createElement('strong', { key: 'bold' }, 'Create new app with EXACT redirect URI: '),
+                            React.createElement('code', {
+                                key: 'uri',
+                                className: 'bg-gray-100 px-2 py-1 rounded text-xs'
+                            }, 'https://pmoon777.github.io/options-tracker/options-portfolio-tracker.html')
+                        ]),
+                        React.createElement('li', { key: 'step3' }, 'Copy the exact Client ID from your app settings'),
+                        React.createElement('li', { key: 'step4' }, 'Paste Client ID below and click Save Config'),
+                        React.createElement('li', { key: 'step5' }, 'Wait for app approval (can take 24-48 hours)')
                     ])
                 ]),
 
                 React.createElement('div', {
                     key: 'form',
-                    className: 'grid grid-cols-1 md:grid-cols-3 gap-3'
+                    className: 'grid grid-cols-1 md:grid-cols-3 gap-3 mb-4'
                 }, [
                     React.createElement('input', {
                         key: 'client-id',
                         type: 'text',
                         value: clientId,
                         onChange: (e) => setClientId(e.target.value),
-                        placeholder: 'Enter Schwab Client ID',
+                        placeholder: 'Enter Schwab Client ID (format: 12345678-1234-...)',
                         className: 'px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white'
                     }),
                     React.createElement('button', {
@@ -325,7 +381,27 @@
                         onClick: handleAuthenticate,
                         disabled: !clientId.trim(),
                         className: 'px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed'
-                    }, isAuthenticating ? 'Authenticating...' : '🔗 Authenticate with Schwab')
+                    }, isAuthenticating ? 'Redirecting...' : '🔗 Authenticate with Schwab')
+                ]),
+
+                React.createElement('div', {
+                    key: 'debug-toggle',
+                    className: 'mb-4'
+                }, React.createElement('button', {
+                    onClick: () => setShowDebugInfo(!showDebugInfo),
+                    className: 'text-xs text-gray-600 hover:text-gray-800 underline'
+                }, showDebugInfo ? 'Hide Debug Info' : 'Show Debug Info')),
+
+                showDebugInfo && React.createElement('div', {
+                    key: 'debug-info',
+                    className: 'mt-2 mb-4 p-3 bg-gray-100 border rounded text-xs'
+                }, [
+                    React.createElement('p', { key: 'debug-title', className: 'font-bold' }, 'Debug Information:'),
+                    React.createElement('p', { key: 'client-id' }, `Client ID: ${API_CONFIG.clientId || 'Not set'}`),
+                    React.createElement('p', { key: 'redirect' }, `Redirect URI: ${API_CONFIG.redirectUri}`),
+                    React.createElement('p', { key: 'auth-url' }, `Auth URL: ${API_CONFIG.authUrl}`),
+                    React.createElement('p', { key: 'token-url' }, `Token URL: ${API_CONFIG.tokenUrl}`),
+                    React.createElement('p', { key: 'has-token' }, `Has Access Token: ${API_CONFIG.accessToken ? 'Yes' : 'No'}`)
                 ]),
 
                 API_CONFIG.accessToken && React.createElement('div', {
@@ -336,9 +412,22 @@
                 authError && React.createElement('div', {
                     key: 'error',
                     className: 'mt-4 p-3 bg-red-100 border border-red-300 rounded text-red-700 text-sm'
-                }, `❌ ${authError}`),
+                }, [
+                    React.createElement('strong', { key: 'title' }, '❌ Authentication Error: '),
+                    React.createElement('span', { key: 'message' }, authError),
+                    React.createElement('br', { key: 'br' }),
+                    React.createElement('br', { key: 'br2' }),
+                    React.createElement('span', { key: 'help', className: 'text-xs' }, 
+                        'Common fixes: 1) Check Client ID format, 2) Verify redirect URI exactly matches, 3) Wait for app approval, 4) Try again in 5 minutes'
+                    )
+                ]),
 
-                React.createElement('div', {
+                !API_CONFIG.accessToken && React.createElement('div', {
+                    key: 'demo-mode',
+                    className: 'mt-4 p-3 bg-yellow-100 border border-yellow-300 rounded text-yellow-800 text-sm'
+                }, '🎭 Demo Mode: Using mock data for demonstration. Configure API above for real option prices.')
+            ]);
+        };
                     key: 'demo-mode',
                     className: 'mt-4 p-3 bg-yellow-100 border border-yellow-300 rounded text-yellow-800 text-sm'
                 }, '🎭 Demo Mode: Using mock data for demonstration. Configure API above for real option prices.')
